@@ -1,0 +1,76 @@
+#!/bin/bash
+
+function repo_root(){
+  git rev-parse --show-toplevel
+}
+
+function is_gnu_sed(){
+  sed --version >/dev/null 2>&1
+}
+
+# operator versions
+version="2.0.0"
+replaces_version="1.9.9"
+skips_versions='>=1.0.0 <2.0.0'
+
+# push your images
+# controller_image=company-registry.net/my-project/controller-image:2.0.0
+# first_image=company-registry.net/my-project/first-image:2.0.0
+# second_image=company-registry.net/my-project/second-image:2.0.0
+# docker push $controller_image
+# docker push $first_image
+# docker push $second_image
+
+# now we can get the image digest (you'd want to fail this script if your images
+# don't have digests yet!)
+# docker inspect --format='{{index .RepoDigests 0}}' $controller_image
+# docker inspect --format='{{index .RepoDigests 0}}' $first_image
+# docker inspect --format='{{index .RepoDigests 0}}' $second_image
+
+# image paths (assume we are using the image digests generated from above)
+controller_image="us.gcr.io/my-repo/my-project/controller-image@sha256:3abac84d0fbac67d5a4e1abd07d22a4c73841c61ef523da81bfc04844c3cbc40"
+first_image="us.gcr.io/my-repo/my-project/first-image@sha256:c4fa18ea50d5eec4c0beb98a66bc09e0e807b55e47826cf3c696f7346547df8a"
+second_image="us.gcr.io/my-repo/my-project/second-image@sha256:59144f7d2e329d14b075928057b60e1ae6c91d6c28e57905d8618acf9cb0c6fe"
+
+# template the kustomize file (see this file for additional tweaks for things)
+kustomize_template_path="$(repo_root)/config/manifests/kustomization-template.yaml"
+kustomize_dest_path="$(repo_root)/config/manifests/kustomization.yaml"
+
+# copy the template to our working directory (we keep changes to this file
+# out of source, since these will effectively be "dirty" between each use, and
+# and restored upon each run of this script)
+cp "$kustomize_template_path" "$kustomize_dest_path"
+
+# inject template data into our working kustomization config
+if is_gnu_sed; then
+  sed -i "s|{{ related_image_controller }}|$controller_image|g" "$kustomize_dest_path"
+  sed -i "s|{{ related_image_first }}|$first_image|g" "$kustomize_dest_path"
+  sed -i "s|{{ related_image_second }}|$second_image|g" "$kustomize_dest_path"
+  sed -i "s/{{ replaces_version }}/$replaces_version/g" "$kustomize_dest_path"
+  sed -i "s/{{ skips_versions }}/'$skips_versions'/g" "$kustomize_dest_path"
+else
+  # support MacOS
+  sed -i '' "s|{{ related_image_controller }}|$controller_image|g" "$kustomize_dest_path"
+  sed -i '' "s|{{ related_image_first }}|$first_image|g" "$kustomize_dest_path"
+  sed -i '' "s|{{ related_image_second }}|$second_image|g" "$kustomize_dest_path"
+  sed -i '' "s/{{ replaces_version }}/$replaces_version/g" "$kustomize_dest_path"
+  sed -i '' "s/{{ skips_versions }}/'$skips_versions'/g" "$kustomize_dest_path"
+fi
+
+# run the bundle command
+make bundle VERSION="2.0.0" IMG="$controller_image"
+
+# add labels to the generated annotations.yaml and bulder.Dockerfile
+annotations_file="$(repo_root)/bundle/metadata/annotations.yaml"
+builder_dockerfile="$(repo_root)/bundle.Dockerfile"
+{
+  ## IMPORTANT: the spaces are significant!
+  echo ""
+  echo "  # Add supported versions for OCP"
+  echo "  com.redhat.openshift.versions: 4.6-4.9"
+} >> $annotations_file
+{
+  echo ""
+  echo "# Add supported versions for OCP"
+  echo "LABEL com.redhat.openshift.versions=4.6-4.9"
+} >> $builder_dockerfile
